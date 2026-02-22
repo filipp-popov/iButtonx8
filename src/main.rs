@@ -7,6 +7,7 @@ mod onewire; // 1-Wire low-level timing + reader scan module.
 use panic_halt as _; // Halt CPU on panic (smallest panic behavior).
 
 use cortex_m_rt::entry; // Entry attribute for embedded start function.
+use cortex_m::peripheral::{DWT, Peripherals as CorePeripherals}; // Core peripherals for cycle counter timing.
 use stm32f1xx_hal::serial::{Config, Serial}; // UART config/types.
 use stm32f1xx_hal::{pac, prelude::*}; // PAC peripherals + extension traits.
 
@@ -16,6 +17,7 @@ use crate::onewire::scan_reader; // Per-reader scan helper.
 #[entry] // Mark this as the startup function.
 fn main() -> ! {
     let dp = pac::Peripherals::take().unwrap(); // Take singleton peripheral set.
+    let mut cp = CorePeripherals::take().unwrap(); // Take Cortex-M core peripherals.
 
     let mut flash = dp.FLASH.constrain(); // FLASH interface wrapper for latency setup.
     let rcc = dp.RCC.constrain(); // RCC wrapper for clock tree configuration.
@@ -28,9 +30,19 @@ fn main() -> ! {
         .pclk1(36.MHz()) // Keep APB1 within STM32F1 limit.
         .freeze(&mut flash.acr); // Apply config and compute frozen clock values.
     let cycles_per_us = clocks.sysclk().raw() / 1_000_000; // Convert microseconds to CPU cycles.
+    let heartbeat_interval_cycles = (clocks.sysclk().raw() / 1_000) * 300; // 300 ms in CPU cycles.
+
+    cp.DCB.enable_trace(); // Enable trace so DWT cycle counter works.
+    cp.DWT.enable_cycle_counter(); // Start DWT CYCCNT free-running counter.
+    let mut heartbeat_last = DWT::cycle_count(); // Timestamp of last heartbeat toggle.
+    let mut heartbeat_on = false; // Current heartbeat logical state.
 
     let mut gpioa = dp.GPIOA.split(); // Split GPIOA into independent pin objects.
     let mut gpiob = dp.GPIOB.split(); // Split GPIOB into independent pin objects.
+    let mut gpioc = dp.GPIOC.split(); // Split GPIOC for onboard PC13 heartbeat LED.
+
+    let mut hb = gpioc.pc13.into_push_pull_output(&mut gpioc.crh); // Blue Pill user LED on PC13 (active low).
+    let _ = hb.set_high(); // Start with heartbeat LED off.
 
     // Disable JTAG and keep SWD so PA15/PB3/PB4 become usable GPIOs.
     let (pa15, pb3, pb4) = afio.mapr.disable_jtag(gpioa.pa15, gpiob.pb3, gpiob.pb4);
@@ -111,6 +123,17 @@ fn main() -> ! {
     let mut scan_idx = 0usize; // Round-robin scanner index 0..7.
 
     loop {
+        let now = DWT::cycle_count(); // Current cycle counter snapshot.
+        if now.wrapping_sub(heartbeat_last) >= heartbeat_interval_cycles {
+            heartbeat_last = now; // Reset interval base.
+            heartbeat_on = !heartbeat_on; // Toggle heartbeat state.
+            if heartbeat_on {
+                let _ = hb.set_low(); // Active-low LED ON.
+            } else {
+                let _ = hb.set_high(); // Active-low LED OFF.
+            }
+        }
+
         // Service UART RX/TX before scanning to keep protocol latency low.
         poll_uart(
             &mut uart_tx,
@@ -124,17 +147,31 @@ fn main() -> ! {
 
         let old_present = present[scan_idx]; // Snapshot previous presence.
         let old_uid = uids[scan_idx]; // Snapshot previous UID.
+        let present_snapshot = present; // Snapshot for protocol replies while current reader is scanning.
+        let uids_snapshot = uids; // Snapshot for protocol replies while current reader is scanning.
+
+        let mut service_comm = || {
+            poll_uart(
+                &mut uart_tx,
+                &mut uart_rx,
+                &mut rs485_de,
+                &mut ecp,
+                &mut dirty,
+                &present_snapshot,
+                &uids_snapshot,
+            );
+        };
 
         // Scan exactly one reader per loop iteration.
         match scan_idx {
-            0 => present[0] = scan_reader(&mut p0, &mut d0, &mut uids[0], cycles_per_us), // Reader 0.
-            1 => present[1] = scan_reader(&mut p1, &mut d1, &mut uids[1], cycles_per_us), // Reader 1.
-            2 => present[2] = scan_reader(&mut p2, &mut d2, &mut uids[2], cycles_per_us), // Reader 2.
-            3 => present[3] = scan_reader(&mut p3, &mut d3, &mut uids[3], cycles_per_us), // Reader 3.
-            4 => present[4] = scan_reader(&mut p4, &mut d4, &mut uids[4], cycles_per_us), // Reader 4.
-            5 => present[5] = scan_reader(&mut p5, &mut d5, &mut uids[5], cycles_per_us), // Reader 5.
-            6 => present[6] = scan_reader(&mut p6, &mut d6, &mut uids[6], cycles_per_us), // Reader 6.
-            _ => present[7] = scan_reader(&mut p7, &mut d7, &mut uids[7], cycles_per_us), // Reader 7.
+            0 => present[0] = scan_reader(&mut p0, &mut d0, &mut uids[0], cycles_per_us, &mut service_comm), // Reader 0.
+            1 => present[1] = scan_reader(&mut p1, &mut d1, &mut uids[1], cycles_per_us, &mut service_comm), // Reader 1.
+            2 => present[2] = scan_reader(&mut p2, &mut d2, &mut uids[2], cycles_per_us, &mut service_comm), // Reader 2.
+            3 => present[3] = scan_reader(&mut p3, &mut d3, &mut uids[3], cycles_per_us, &mut service_comm), // Reader 3.
+            4 => present[4] = scan_reader(&mut p4, &mut d4, &mut uids[4], cycles_per_us, &mut service_comm), // Reader 4.
+            5 => present[5] = scan_reader(&mut p5, &mut d5, &mut uids[5], cycles_per_us, &mut service_comm), // Reader 5.
+            6 => present[6] = scan_reader(&mut p6, &mut d6, &mut uids[6], cycles_per_us, &mut service_comm), // Reader 6.
+            _ => present[7] = scan_reader(&mut p7, &mut d7, &mut uids[7], cycles_per_us, &mut service_comm), // Reader 7.
         }
 
         // Mark reader dirty if presence or UID changed.

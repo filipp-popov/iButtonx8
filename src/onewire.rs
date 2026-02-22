@@ -4,9 +4,13 @@ pub fn delay_us(us: u32, cycles_per_us: u32) {
     cortex_m::asm::delay(us.saturating_mul(cycles_per_us)); // Busy-wait for requested microseconds.
 }
 
-pub fn delay_ms(ms: u32, cycles_per_us: u32) {
-    for _ in 0..ms { // Repeat 1 ms delay loop `ms` times.
-        delay_us(1_000, cycles_per_us); // 1000 us = 1 ms.
+fn delay_ms_coop<F>(ms: u32, cycles_per_us: u32, service: &mut F)
+where
+    F: FnMut(),
+{
+    for _ in 0..ms {
+        delay_us(1_000, cycles_per_us); // Keep 1 ms granularity for predictable timing.
+        service(); // Give communication/task layer a chance to run between delay slices.
     }
 }
 
@@ -118,13 +122,14 @@ pub fn scan_reader<PWR, DATA>(
     data: &mut DATA, // Per-reader 1-Wire data pin.
     uid_out: &mut [u8; 8], // Output buffer for last valid ROM code.
     cycles_per_us: u32, // Timing conversion factor from clocks.
+    service: &mut impl FnMut(), // Cooperative callback (e.g., service RS485).
 ) -> bool
 where
     PWR: OutputPin,
     DATA: OutputPin + InputPin,
 {
     let _ = pwr.set_high(); // Power reader ON.
-    delay_ms(100, cycles_per_us); // Settle delay to reduce crosstalk/boot transients.
+    delay_ms_coop(100, cycles_per_us, service); // Settle delay while still servicing communication.
 
     let mut found = None; // Store a valid ROM if read succeeds.
     for _ in 0..2 { // Small retry count for robustness.
@@ -132,11 +137,11 @@ where
             found = Some(rom); // Save successful UID.
             break; // Stop retries after first success.
         }
-        delay_ms(5, cycles_per_us); // Brief pause between attempts.
+        delay_ms_coop(5, cycles_per_us, service); // Retry gap with cooperative servicing.
     }
 
     let _ = pwr.set_low(); // Power reader OFF before switching to next channel.
-    delay_ms(10, cycles_per_us); // Guard delay to avoid overlap noise.
+    delay_ms_coop(10, cycles_per_us, service); // Guard delay with cooperative servicing.
 
     if let Some(rom) = found {
         *uid_out = rom; // Update caller cache with valid UID.
