@@ -1,0 +1,19 @@
+# Rust build artifacts
+/target/
+
+# Cargo lock for binaries is usually committed.
+# Uncomment if you prefer not to track it:
+# Cargo.lock
+
+# VS Code local state
+.vscode/*.log
+.vscode/*.tmp
+.vscode/*.cache
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+
+# probe-rs logs / temp outputs (if created)
+*.elf.log
+*.bin

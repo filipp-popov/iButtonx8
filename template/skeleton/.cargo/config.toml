@@ -1,0 +1,6 @@
+[build]
+target = "__TARGET__"
+
+[target.__TARGET__]
+runner = "probe-rs run --chip __CHIP__"
+rustflags = ["-C", "link-arg=-Tlink.x"]

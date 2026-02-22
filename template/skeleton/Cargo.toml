@@ -1,0 +1,23 @@
+[package]
+name = "__PROJECT_NAME__"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+panic-halt = "0.2"
+embedded-hal = "0.2"
+__HAL_CRATE__ = { version = "__HAL_VERSION__", features = ["__HAL_FEATURE__", "rt"] }
+
+[profile.dev]
+opt-level = 0
+debug = 2
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+debug = 0
+strip = "symbols"
+panic = "abort"

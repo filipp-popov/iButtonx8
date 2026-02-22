@@ -1,0 +1,23 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug __PROJECT_NAME__ (probe-rs)",
+      "type": "probe-rs-debug",
+      "request": "launch",
+      "preLaunchTask": "Cargo Build (debug)",
+      "connectUnderReset": true,
+      "chip": "__CHIP__",
+      "flashingConfig": {
+        "flashingEnabled": true,
+        "haltAfterReset": true
+      },
+      "coreConfigs": [
+        {
+          "programBinary": "${workspaceFolder}/target/__TARGET__/debug/__PROJECT_NAME__"
+        }
+      ],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}

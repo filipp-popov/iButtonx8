@@ -1,0 +1,25 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+
+    {
+      "name": "Debug STM32F103 (probe-rs)",
+      "type": "probe-rs-debug",
+      "request": "launch",
+      "consoleLogLevel": "Console",
+      "preLaunchTask": "Cargo Build (debug)",
+      "connectUnderReset": true,
+      "chip": "STM32F103C8",
+      "flashingConfig": {
+        "flashingEnabled": true,
+        "haltAfterReset": true
+      },
+      "coreConfigs": [
+        {
+          "programBinary": "${workspaceFolder}/target/thumbv7m-none-eabi/debug/stm32f103-bluepill-blink"
+        }
+      ],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}
