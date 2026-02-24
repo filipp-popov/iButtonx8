@@ -133,11 +133,11 @@ fn main() -> ! {
             }
         }
 
-        // Service UART and refresh only the explicitly requested reader index.
-        let mut refresh_reader = |idx: usize,
-                                  present_state: &mut [bool; 8],
-                                  uid_state: &mut [[u8; 8]; 8],
-                                  dirty_state: &mut [bool; 8]| {
+        // Service UART and refresh requested reader or full sweep on REQ_SEND.
+        let mut scan_one = |idx: usize,
+                            present_state: &mut [bool; 8],
+                            uid_state: &mut [[u8; 8]; 8],
+                            dirty_state: &mut [bool; 8]| {
             let old_present = present_state[idx];
             let old_uid = uid_state[idx];
             let mut idle_service = || {};
@@ -169,6 +169,19 @@ fn main() -> ! {
             }
         };
 
+        let mut refresh = |idx_opt: Option<usize>,
+                           present_state: &mut [bool; 8],
+                           uid_state: &mut [[u8; 8]; 8],
+                           dirty_state: &mut [bool; 8]| {
+            if let Some(idx) = idx_opt {
+                scan_one(idx, present_state, uid_state, dirty_state); // Refresh only requested reader.
+            } else {
+                for idx in 0..8 {
+                    scan_one(idx, present_state, uid_state, dirty_state); // Full sweep for REQ_SEND polling.
+                }
+            }
+        };
+
         poll_uart(
             &mut uart_tx,
             &mut uart_rx,
@@ -177,7 +190,7 @@ fn main() -> ! {
             &mut dirty,
             &mut present,
             &mut uids,
-            &mut refresh_reader,
+            &mut refresh,
         );
 
         // Mirror presence state to LED outputs.

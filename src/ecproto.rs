@@ -12,7 +12,7 @@ const ECP_PAYLOAD_IDX: usize = 3; // Payload start index.
 const ECP_ACT_INIT: u8 = 0x00; // Init frame action.
 const ECP_ACT_REQ_SEND: u8 = 0x01; // Master poll action.
 const ECP_ACT_SEND_NOTIFY: u8 = 0x02; // Update-count announce action.
-const ECP_ACT_SPECIAL_INTERACT: u8 = 0x08; // Special-device interaction action.
+const ECP_ACT_SPECIAL_INTERACT: u8 = 0x11; // Special-device interaction action (docs-compatible).
 
 const ECP_SPECIALDEV_IBUTTON: u8 = 0x07; // iButton special-device id.
 const ECP_IBUTTON_GET_DEV_CNT: u8 = 0x00; // iButton sub-action: get reader count.
@@ -29,7 +29,7 @@ impl EcprotoState {
         Self {
             rx_buf: [0u8; 256], // Zeroed receive buffer.
             rx_len: 0, // Empty RX cursor.
-            initialized: true, // Start initialized (master can poll immediately).
+            initialized: false, // Start uninitialized and wait for master INIT handshake.
         }
     }
 }
@@ -132,9 +132,8 @@ fn ecp_process_updates<TX, DE>(
     DE: OutputPin,
 {
     if !state.initialized {
-        ecp_send_frame(tx, de, ECP_ACT_INIT, &[]); // Send init frame once.
-        state.initialized = true; // Mark initialized.
-        return; // Done for this poll.
+        ecp_send_frame(tx, de, ECP_ACT_INIT, &[]); // Request master init per protocol.
+        return; // Do not send updates until INIT is received from master.
     }
 
     let mut update_cnt = 0u8; // Count how many updates we will emit.
@@ -161,11 +160,11 @@ fn ecp_handle_frame<TX, DE, REFRESH>(
     dirty: &mut [bool; 8], // Dirty flags for update generation.
     present: &mut [bool; 8], // Presence cache.
     uids: &mut [[u8; 8]; 8], // UID cache.
-    refresh_reader: &mut REFRESH, // On-demand reader scan callback.
+    refresh: &mut REFRESH, // On-demand scan callback (single reader or full sweep).
 ) where
     TX: SerialWrite<u8>,
     DE: OutputPin,
-    REFRESH: FnMut(usize, &mut [bool; 8], &mut [[u8; 8]; 8], &mut [bool; 8]),
+    REFRESH: FnMut(Option<usize>, &mut [bool; 8], &mut [[u8; 8]; 8], &mut [bool; 8]),
 {
     if frame.len() < ECP_OVERHEAD_MIN {
         return; // Reject too-short frame.
@@ -187,7 +186,13 @@ fn ecp_handle_frame<TX, DE, REFRESH>(
     }
 
     match frame[ECP_ACT_IDX] {
+        ECP_ACT_INIT => {
+            state.initialized = true; // Master acknowledged/initiated handshake.
+        }
         ECP_ACT_REQ_SEND => {
+            if state.initialized {
+                refresh(None, present, uids, dirty); // Poll request updates all readers first.
+            }
             ecp_process_updates(tx, de, state, dirty, present, uids); // Poll request -> send updates.
         }
         ECP_ACT_SPECIAL_INTERACT => {
@@ -211,7 +216,7 @@ fn ecp_handle_frame<TX, DE, REFRESH>(
                     if idx >= 8 {
                         return; // Reject out-of-range index.
                     }
-                    refresh_reader(idx, present, uids, dirty); // Refresh requested reader just-in-time.
+                    refresh(Some(idx), present, uids, dirty); // Refresh requested reader just-in-time.
                     ecp_send_ibutton_tag(tx, de, idx as u8, present[idx], &uids[idx]); // Send cached tag state.
                 }
                 _ => {} // Ignore unsupported iButton sub-actions.
@@ -229,12 +234,12 @@ pub fn poll_uart<TX, RX, DE, REFRESH>(
     dirty: &mut [bool; 8], // Dirty flags.
     present: &mut [bool; 8], // Presence cache.
     uids: &mut [[u8; 8]; 8], // UID cache.
-    refresh_reader: &mut REFRESH, // On-demand reader scan callback.
+    refresh: &mut REFRESH, // On-demand scan callback (single reader or full sweep).
 ) where
     TX: SerialWrite<u8>,
     RX: SerialRead<u8>,
     DE: OutputPin,
-    REFRESH: FnMut(usize, &mut [bool; 8], &mut [[u8; 8]; 8], &mut [bool; 8]),
+    REFRESH: FnMut(Option<usize>, &mut [bool; 8], &mut [[u8; 8]; 8], &mut [bool; 8]),
 {
     loop {
         let byte = match rx.read() {
@@ -255,7 +260,7 @@ pub fn poll_uart<TX, RX, DE, REFRESH>(
                 let frame_len = state.rx_len; // Current buffered frame length.
                 frame[..frame_len].copy_from_slice(&state.rx_buf[..frame_len]); // Copy bytes.
                 state.rx_len = 0; // Reset buffer for next frame.
-                ecp_handle_frame(tx, de, state, &frame[..frame_len], dirty, present, uids, refresh_reader); // Parse and respond.
+                ecp_handle_frame(tx, de, state, &frame[..frame_len], dirty, present, uids, refresh); // Parse and respond.
             }
         }
     }
