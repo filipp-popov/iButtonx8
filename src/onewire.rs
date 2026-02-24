@@ -1,5 +1,10 @@
 use embedded_hal::digital::v2::{InputPin, OutputPin}; // GPIO traits used by 1-Wire bus operations.
 
+const POWER_SETTLE_MS: u32 = 180; // Reader warm-up before first 1-Wire reset.
+const RETRY_GAP_MS: u32 = 20; // Delay between ROM read retries.
+const POWER_OFF_GUARD_MS: u32 = 3; // Guard time after power-down.
+const KEEP_POWER_ON_BETWEEN_SCANS: bool = false; // Power down after each command-triggered scan.
+
 pub fn delay_us(us: u32, cycles_per_us: u32) {
     cortex_m::asm::delay(us.saturating_mul(cycles_per_us)); // Busy-wait for requested microseconds.
 }
@@ -129,19 +134,21 @@ where
     DATA: OutputPin + InputPin,
 {
     let _ = pwr.set_high(); // Power reader ON.
-    delay_ms_coop(100, cycles_per_us, service); // Settle delay while still servicing communication.
+    delay_ms_coop(POWER_SETTLE_MS, cycles_per_us, service); // Settle delay while still servicing communication.
 
     let mut found = None; // Store a valid ROM if read succeeds.
-    for _ in 0..2 { // Small retry count for robustness.
+    for _ in 0..4 { // Robust profile for command-triggered one-by-one reads.
         if let Some(rom) = ibutton_read_rom(data, cycles_per_us) {
             found = Some(rom); // Save successful UID.
             break; // Stop retries after first success.
         }
-        delay_ms_coop(5, cycles_per_us, service); // Retry gap with cooperative servicing.
+        delay_ms_coop(RETRY_GAP_MS, cycles_per_us, service); // Retry gap with cooperative servicing.
     }
 
-    let _ = pwr.set_low(); // Power reader OFF before switching to next channel.
-    delay_ms_coop(10, cycles_per_us, service); // Guard delay with cooperative servicing.
+    if !KEEP_POWER_ON_BETWEEN_SCANS {
+        let _ = pwr.set_low(); // Power reader OFF before switching to next channel.
+        delay_ms_coop(POWER_OFF_GUARD_MS, cycles_per_us, service); // Guard delay with cooperative servicing.
+    }
 
     if let Some(rom) = found {
         *uid_out = rom; // Update caller cache with valid UID.

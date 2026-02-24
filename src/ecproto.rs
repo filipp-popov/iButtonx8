@@ -153,17 +153,19 @@ fn ecp_process_updates<TX, DE>(
     }
 }
 
-fn ecp_handle_frame<TX, DE>(
+fn ecp_handle_frame<TX, DE, REFRESH>(
     tx: &mut TX, // UART TX.
     de: &mut DE, // RS485 direction pin.
     state: &mut EcprotoState, // Protocol state.
     frame: &[u8], // Complete received frame bytes.
     dirty: &mut [bool; 8], // Dirty flags for update generation.
-    present: &[bool; 8], // Presence cache.
-    uids: &[[u8; 8]; 8], // UID cache.
+    present: &mut [bool; 8], // Presence cache.
+    uids: &mut [[u8; 8]; 8], // UID cache.
+    refresh_reader: &mut REFRESH, // On-demand reader scan callback.
 ) where
     TX: SerialWrite<u8>,
     DE: OutputPin,
+    REFRESH: FnMut(usize, &mut [bool; 8], &mut [[u8; 8]; 8], &mut [bool; 8]),
 {
     if frame.len() < ECP_OVERHEAD_MIN {
         return; // Reject too-short frame.
@@ -209,6 +211,7 @@ fn ecp_handle_frame<TX, DE>(
                     if idx >= 8 {
                         return; // Reject out-of-range index.
                     }
+                    refresh_reader(idx, present, uids, dirty); // Refresh requested reader just-in-time.
                     ecp_send_ibutton_tag(tx, de, idx as u8, present[idx], &uids[idx]); // Send cached tag state.
                 }
                 _ => {} // Ignore unsupported iButton sub-actions.
@@ -218,18 +221,20 @@ fn ecp_handle_frame<TX, DE>(
     }
 }
 
-pub fn poll_uart<TX, RX, DE>(
+pub fn poll_uart<TX, RX, DE, REFRESH>(
     tx: &mut TX, // UART TX handle.
     rx: &mut RX, // UART RX handle.
     de: &mut DE, // RS485 DE/RE pin.
     state: &mut EcprotoState, // Protocol parser state.
     dirty: &mut [bool; 8], // Dirty flags.
-    present: &[bool; 8], // Presence cache.
-    uids: &[[u8; 8]; 8], // UID cache.
+    present: &mut [bool; 8], // Presence cache.
+    uids: &mut [[u8; 8]; 8], // UID cache.
+    refresh_reader: &mut REFRESH, // On-demand reader scan callback.
 ) where
     TX: SerialWrite<u8>,
     RX: SerialRead<u8>,
     DE: OutputPin,
+    REFRESH: FnMut(usize, &mut [bool; 8], &mut [[u8; 8]; 8], &mut [bool; 8]),
 {
     loop {
         let byte = match rx.read() {
@@ -250,7 +255,7 @@ pub fn poll_uart<TX, RX, DE>(
                 let frame_len = state.rx_len; // Current buffered frame length.
                 frame[..frame_len].copy_from_slice(&state.rx_buf[..frame_len]); // Copy bytes.
                 state.rx_len = 0; // Reset buffer for next frame.
-                ecp_handle_frame(tx, de, state, &frame[..frame_len], dirty, present, uids); // Parse and respond.
+                ecp_handle_frame(tx, de, state, &frame[..frame_len], dirty, present, uids, refresh_reader); // Parse and respond.
             }
         }
     }

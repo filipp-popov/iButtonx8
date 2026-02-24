@@ -12,7 +12,7 @@ use stm32f1xx_hal::serial::{Config, Serial}; // UART config/types.
 use stm32f1xx_hal::{pac, prelude::*}; // PAC peripherals + extension traits.
 
 use crate::ecproto::{poll_uart, EcprotoState}; // ECPROTO RX/TX polling and state.
-use crate::onewire::scan_reader; // Per-reader scan helper.
+use crate::onewire::{delay_us, scan_reader}; // Per-reader scan helper.
 
 #[entry] // Mark this as the startup function.
 fn main() -> ! {
@@ -120,7 +120,6 @@ fn main() -> ! {
     let mut present = [false; 8]; // Presence state per reader.
     let mut dirty = [true; 8]; // Change flag per reader for ECPROTO update flow.
     let mut ecp = EcprotoState::new(); // ECPROTO parser/buffer state.
-    let mut scan_idx = 0usize; // Round-robin scanner index 0..7.
 
     loop {
         let now = DWT::cycle_count(); // Current cycle counter snapshot.
@@ -134,61 +133,51 @@ fn main() -> ! {
             }
         }
 
-        // Service UART RX/TX before scanning to keep protocol latency low.
-        poll_uart(
-            &mut uart_tx,
-            &mut uart_rx,
-            &mut rs485_de,
-            &mut ecp,
-            &mut dirty,
-            &present,
-            &uids,
-        );
+        // Service UART and refresh only the explicitly requested reader index.
+        let mut refresh_reader = |idx: usize,
+                                  present_state: &mut [bool; 8],
+                                  uid_state: &mut [[u8; 8]; 8],
+                                  dirty_state: &mut [bool; 8]| {
+            let old_present = present_state[idx];
+            let old_uid = uid_state[idx];
+            let mut idle_service = || {};
 
-        let old_present = present[scan_idx]; // Snapshot previous presence.
-        let old_uid = uids[scan_idx]; // Snapshot previous UID.
-        let present_snapshot = present; // Snapshot for protocol replies while current reader is scanning.
-        let uids_snapshot = uids; // Snapshot for protocol replies while current reader is scanning.
+            // Enforce single-reader power to reduce cross-coupling between channels.
+            let _ = p0.set_low();
+            let _ = p1.set_low();
+            let _ = p2.set_low();
+            let _ = p3.set_low();
+            let _ = p4.set_low();
+            let _ = p5.set_low();
+            let _ = p6.set_low();
+            let _ = p7.set_low();
+            delay_us(2_000, cycles_per_us); // Brief discharge gap before powering selected reader.
 
-        let mut service_comm = || {
-            poll_uart(
-                &mut uart_tx,
-                &mut uart_rx,
-                &mut rs485_de,
-                &mut ecp,
-                &mut dirty,
-                &present_snapshot,
-                &uids_snapshot,
-            );
+            present_state[idx] = match idx {
+                0 => scan_reader(&mut p0, &mut d0, &mut uid_state[0], cycles_per_us, &mut idle_service),
+                1 => scan_reader(&mut p1, &mut d1, &mut uid_state[1], cycles_per_us, &mut idle_service),
+                2 => scan_reader(&mut p2, &mut d2, &mut uid_state[2], cycles_per_us, &mut idle_service),
+                3 => scan_reader(&mut p3, &mut d3, &mut uid_state[3], cycles_per_us, &mut idle_service),
+                4 => scan_reader(&mut p4, &mut d4, &mut uid_state[4], cycles_per_us, &mut idle_service),
+                5 => scan_reader(&mut p5, &mut d5, &mut uid_state[5], cycles_per_us, &mut idle_service),
+                6 => scan_reader(&mut p6, &mut d6, &mut uid_state[6], cycles_per_us, &mut idle_service),
+                _ => scan_reader(&mut p7, &mut d7, &mut uid_state[7], cycles_per_us, &mut idle_service),
+            };
+
+            if present_state[idx] != old_present || uid_state[idx] != old_uid {
+                dirty_state[idx] = true;
+            }
         };
 
-        // Scan exactly one reader per loop iteration.
-        match scan_idx {
-            0 => present[0] = scan_reader(&mut p0, &mut d0, &mut uids[0], cycles_per_us, &mut service_comm), // Reader 0.
-            1 => present[1] = scan_reader(&mut p1, &mut d1, &mut uids[1], cycles_per_us, &mut service_comm), // Reader 1.
-            2 => present[2] = scan_reader(&mut p2, &mut d2, &mut uids[2], cycles_per_us, &mut service_comm), // Reader 2.
-            3 => present[3] = scan_reader(&mut p3, &mut d3, &mut uids[3], cycles_per_us, &mut service_comm), // Reader 3.
-            4 => present[4] = scan_reader(&mut p4, &mut d4, &mut uids[4], cycles_per_us, &mut service_comm), // Reader 4.
-            5 => present[5] = scan_reader(&mut p5, &mut d5, &mut uids[5], cycles_per_us, &mut service_comm), // Reader 5.
-            6 => present[6] = scan_reader(&mut p6, &mut d6, &mut uids[6], cycles_per_us, &mut service_comm), // Reader 6.
-            _ => present[7] = scan_reader(&mut p7, &mut d7, &mut uids[7], cycles_per_us, &mut service_comm), // Reader 7.
-        }
-
-        // Mark reader dirty if presence or UID changed.
-        if present[scan_idx] != old_present || uids[scan_idx] != old_uid {
-            dirty[scan_idx] = true;
-        }
-        scan_idx = (scan_idx + 1) & 0x07; // Advance and wrap index to [0..7].
-
-        // Service UART again after scan so requests are handled quickly.
         poll_uart(
             &mut uart_tx,
             &mut uart_rx,
             &mut rs485_de,
             &mut ecp,
             &mut dirty,
-            &present,
-            &uids,
+            &mut present,
+            &mut uids,
+            &mut refresh_reader,
         );
 
         // Mirror presence state to LED outputs.
