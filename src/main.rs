@@ -151,7 +151,7 @@ fn main() -> ! {
             let _ = p5.set_low();
             let _ = p6.set_low();
             let _ = p7.set_low();
-            delay_us(2_000, cycles_per_us); // Brief discharge gap before powering selected reader.
+            delay_us(200, cycles_per_us); // Brief discharge gap before powering selected reader.
 
             present_state[idx] = match idx {
                 0 => scan_reader(&mut p0, &mut d0, &mut uid_state[0], cycles_per_us, &mut idle_service),

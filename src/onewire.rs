@@ -1,7 +1,7 @@
 use embedded_hal::digital::v2::{InputPin, OutputPin}; // GPIO traits used by 1-Wire bus operations.
 
 const POWER_SETTLE_MS: u32 = 180; // Reader warm-up before first 1-Wire reset.
-const RETRY_GAP_MS: u32 = 20; // Delay between ROM read retries.
+const RETRY_GAP_MS: u32 = 15; // Delay between ROM read retries.
 const POWER_OFF_GUARD_MS: u32 = 3; // Guard time after power-down.
 const KEEP_POWER_ON_BETWEEN_SCANS: bool = false; // Power down after each command-triggered scan.
 
@@ -137,7 +137,7 @@ where
     delay_ms_coop(POWER_SETTLE_MS, cycles_per_us, service); // Settle delay while still servicing communication.
 
     let mut found = None; // Store a valid ROM if read succeeds.
-    for _ in 0..4 { // Robust profile for command-triggered one-by-one reads.
+    for _ in 0..3 { // Retry up to 3 times per scan to balance robustness and latency.
         if let Some(rom) = ibutton_read_rom(data, cycles_per_us) {
             found = Some(rom); // Save successful UID.
             break; // Stop retries after first success.

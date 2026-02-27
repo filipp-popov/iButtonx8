@@ -12,6 +12,7 @@ const ECP_PAYLOAD_IDX: usize = 3; // Payload start index.
 const ECP_ACT_INIT: u8 = 0x00; // Init frame action.
 const ECP_ACT_REQ_SEND: u8 = 0x01; // Master poll action.
 const ECP_ACT_SEND_NOTIFY: u8 = 0x02; // Update-count announce action.
+const ECP_ACT_GET_PURPOSE: u8 = 0x10; // Master capability query that completes slave init in reference implementation.
 const ECP_ACT_SPECIAL_INTERACT: u8 = 0x11; // Special-device interaction action (docs-compatible).
 
 const ECP_SPECIALDEV_IBUTTON: u8 = 0x07; // iButton special-device id.
@@ -187,7 +188,10 @@ fn ecp_handle_frame<TX, DE, REFRESH>(
 
     match frame[ECP_ACT_IDX] {
         ECP_ACT_INIT => {
-            state.initialized = true; // Master acknowledged/initiated handshake.
+            state.initialized = true; // Compatibility path for masters that still use INIT as handshake.
+        }
+        ECP_ACT_GET_PURPOSE => {
+            state.initialized = true; // Reference path: master GET_PURPOSE marks slave initialized.
         }
         ECP_ACT_REQ_SEND => {
             if state.initialized {
