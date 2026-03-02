@@ -12,7 +12,7 @@ use stm32f1xx_hal::serial::{Config, Serial}; // UART config/types.
 use stm32f1xx_hal::{pac, prelude::*}; // PAC peripherals + extension traits.
 
 use crate::ecproto::{poll_uart, EcprotoState}; // ECPROTO RX/TX polling and state.
-use crate::onewire::{delay_us, scan_reader}; // Per-reader scan helper.
+use crate::onewire::{delay_us, scan_reader, scan_reader_prewarmed, POWER_OFF_GUARD_MS, POWER_SETTLE_MS}; // Per-reader scan helpers and timing constants.
 
 #[entry] // Mark this as the startup function.
 fn main() -> ! {
@@ -134,15 +134,48 @@ fn main() -> ! {
         }
 
         // Service UART and refresh requested reader or full sweep on REQ_SEND.
-        let mut scan_one = |idx: usize,
-                            present_state: &mut [bool; 8],
-                            uid_state: &mut [[u8; 8]; 8],
-                            dirty_state: &mut [bool; 8]| {
-            let old_present = present_state[idx];
-            let old_uid = uid_state[idx];
+        let mut refresh = |idx_opt: Option<usize>,
+                           present_state: &mut [bool; 8],
+                           uid_state: &mut [[u8; 8]; 8],
+                           dirty_state: &mut [bool; 8]| {
             let mut idle_service = || {};
 
-            // Enforce single-reader power to reduce cross-coupling between channels.
+            if let Some(idx) = idx_opt {
+                let old_present = present_state[idx];
+                let old_uid = uid_state[idx];
+
+                let _ = p0.set_low();
+                let _ = p1.set_low();
+                let _ = p2.set_low();
+                let _ = p3.set_low();
+                let _ = p4.set_low();
+                let _ = p5.set_low();
+                let _ = p6.set_low();
+                let _ = p7.set_low();
+                delay_us(200, cycles_per_us); // Brief discharge gap before powering selected reader.
+
+                present_state[idx] = match idx {
+                    0 => scan_reader(&mut p0, &mut d0, &mut uid_state[0], cycles_per_us, &mut idle_service),
+                    1 => scan_reader(&mut p1, &mut d1, &mut uid_state[1], cycles_per_us, &mut idle_service),
+                    2 => scan_reader(&mut p2, &mut d2, &mut uid_state[2], cycles_per_us, &mut idle_service),
+                    3 => scan_reader(&mut p3, &mut d3, &mut uid_state[3], cycles_per_us, &mut idle_service),
+                    4 => scan_reader(&mut p4, &mut d4, &mut uid_state[4], cycles_per_us, &mut idle_service),
+                    5 => scan_reader(&mut p5, &mut d5, &mut uid_state[5], cycles_per_us, &mut idle_service),
+                    6 => scan_reader(&mut p6, &mut d6, &mut uid_state[6], cycles_per_us, &mut idle_service),
+                    _ => scan_reader(&mut p7, &mut d7, &mut uid_state[7], cycles_per_us, &mut idle_service),
+                };
+
+                if present_state[idx] != old_present || uid_state[idx] != old_uid {
+                    dirty_state[idx] = true;
+                }
+                return;
+            }
+
+            // Pair (0,6)
+            let old_present_0 = present_state[0];
+            let old_uid_0 = uid_state[0];
+            let old_present_6 = present_state[6];
+            let old_uid_6 = uid_state[6];
             let _ = p0.set_low();
             let _ = p1.set_low();
             let _ = p2.set_low();
@@ -151,35 +184,92 @@ fn main() -> ! {
             let _ = p5.set_low();
             let _ = p6.set_low();
             let _ = p7.set_low();
-            delay_us(200, cycles_per_us); // Brief discharge gap before powering selected reader.
+            delay_us(200, cycles_per_us);
+            let _ = p0.set_high();
+            let _ = p6.set_high();
+            delay_us(POWER_SETTLE_MS * 1_000, cycles_per_us);
+            present_state[0] = scan_reader_prewarmed(&mut d0, &mut uid_state[0], cycles_per_us, &mut idle_service);
+            present_state[6] = scan_reader_prewarmed(&mut d6, &mut uid_state[6], cycles_per_us, &mut idle_service);
+            let _ = p0.set_low();
+            let _ = p6.set_low();
+            delay_us(POWER_OFF_GUARD_MS * 1_000, cycles_per_us);
+            if present_state[0] != old_present_0 || uid_state[0] != old_uid_0 { dirty_state[0] = true; }
+            if present_state[6] != old_present_6 || uid_state[6] != old_uid_6 { dirty_state[6] = true; }
 
-            present_state[idx] = match idx {
-                0 => scan_reader(&mut p0, &mut d0, &mut uid_state[0], cycles_per_us, &mut idle_service),
-                1 => scan_reader(&mut p1, &mut d1, &mut uid_state[1], cycles_per_us, &mut idle_service),
-                2 => scan_reader(&mut p2, &mut d2, &mut uid_state[2], cycles_per_us, &mut idle_service),
-                3 => scan_reader(&mut p3, &mut d3, &mut uid_state[3], cycles_per_us, &mut idle_service),
-                4 => scan_reader(&mut p4, &mut d4, &mut uid_state[4], cycles_per_us, &mut idle_service),
-                5 => scan_reader(&mut p5, &mut d5, &mut uid_state[5], cycles_per_us, &mut idle_service),
-                6 => scan_reader(&mut p6, &mut d6, &mut uid_state[6], cycles_per_us, &mut idle_service),
-                _ => scan_reader(&mut p7, &mut d7, &mut uid_state[7], cycles_per_us, &mut idle_service),
-            };
+            // Pair (1,7)
+            let old_present_1 = present_state[1];
+            let old_uid_1 = uid_state[1];
+            let old_present_7 = present_state[7];
+            let old_uid_7 = uid_state[7];
+            let _ = p0.set_low();
+            let _ = p1.set_low();
+            let _ = p2.set_low();
+            let _ = p3.set_low();
+            let _ = p4.set_low();
+            let _ = p5.set_low();
+            let _ = p6.set_low();
+            let _ = p7.set_low();
+            delay_us(200, cycles_per_us);
+            let _ = p1.set_high();
+            let _ = p7.set_high();
+            delay_us(POWER_SETTLE_MS * 1_000, cycles_per_us);
+            present_state[1] = scan_reader_prewarmed(&mut d1, &mut uid_state[1], cycles_per_us, &mut idle_service);
+            present_state[7] = scan_reader_prewarmed(&mut d7, &mut uid_state[7], cycles_per_us, &mut idle_service);
+            let _ = p1.set_low();
+            let _ = p7.set_low();
+            delay_us(POWER_OFF_GUARD_MS * 1_000, cycles_per_us);
+            if present_state[1] != old_present_1 || uid_state[1] != old_uid_1 { dirty_state[1] = true; }
+            if present_state[7] != old_present_7 || uid_state[7] != old_uid_7 { dirty_state[7] = true; }
 
-            if present_state[idx] != old_present || uid_state[idx] != old_uid {
-                dirty_state[idx] = true;
-            }
-        };
+            // Pair (2,4)
+            let old_present_2 = present_state[2];
+            let old_uid_2 = uid_state[2];
+            let old_present_4 = present_state[4];
+            let old_uid_4 = uid_state[4];
+            let _ = p0.set_low();
+            let _ = p1.set_low();
+            let _ = p2.set_low();
+            let _ = p3.set_low();
+            let _ = p4.set_low();
+            let _ = p5.set_low();
+            let _ = p6.set_low();
+            let _ = p7.set_low();
+            delay_us(200, cycles_per_us);
+            let _ = p2.set_high();
+            let _ = p4.set_high();
+            delay_us(POWER_SETTLE_MS * 1_000, cycles_per_us);
+            present_state[2] = scan_reader_prewarmed(&mut d2, &mut uid_state[2], cycles_per_us, &mut idle_service);
+            present_state[4] = scan_reader_prewarmed(&mut d4, &mut uid_state[4], cycles_per_us, &mut idle_service);
+            let _ = p2.set_low();
+            let _ = p4.set_low();
+            delay_us(POWER_OFF_GUARD_MS * 1_000, cycles_per_us);
+            if present_state[2] != old_present_2 || uid_state[2] != old_uid_2 { dirty_state[2] = true; }
+            if present_state[4] != old_present_4 || uid_state[4] != old_uid_4 { dirty_state[4] = true; }
 
-        let mut refresh = |idx_opt: Option<usize>,
-                           present_state: &mut [bool; 8],
-                           uid_state: &mut [[u8; 8]; 8],
-                           dirty_state: &mut [bool; 8]| {
-            if let Some(idx) = idx_opt {
-                scan_one(idx, present_state, uid_state, dirty_state); // Refresh only requested reader.
-            } else {
-                for idx in 0..8 {
-                    scan_one(idx, present_state, uid_state, dirty_state); // Full sweep for REQ_SEND polling.
-                }
-            }
+            // Pair (3,5)
+            let old_present_3 = present_state[3];
+            let old_uid_3 = uid_state[3];
+            let old_present_5 = present_state[5];
+            let old_uid_5 = uid_state[5];
+            let _ = p0.set_low();
+            let _ = p1.set_low();
+            let _ = p2.set_low();
+            let _ = p3.set_low();
+            let _ = p4.set_low();
+            let _ = p5.set_low();
+            let _ = p6.set_low();
+            let _ = p7.set_low();
+            delay_us(200, cycles_per_us);
+            let _ = p3.set_high();
+            let _ = p5.set_high();
+            delay_us(POWER_SETTLE_MS * 1_000, cycles_per_us);
+            present_state[3] = scan_reader_prewarmed(&mut d3, &mut uid_state[3], cycles_per_us, &mut idle_service);
+            present_state[5] = scan_reader_prewarmed(&mut d5, &mut uid_state[5], cycles_per_us, &mut idle_service);
+            let _ = p3.set_low();
+            let _ = p5.set_low();
+            delay_us(POWER_OFF_GUARD_MS * 1_000, cycles_per_us);
+            if present_state[3] != old_present_3 || uid_state[3] != old_uid_3 { dirty_state[3] = true; }
+            if present_state[5] != old_present_5 || uid_state[5] != old_uid_5 { dirty_state[5] = true; }
         };
 
         poll_uart(
