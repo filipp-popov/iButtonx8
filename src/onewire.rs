@@ -1,8 +1,8 @@
 use embedded_hal::digital::v2::{InputPin, OutputPin}; // GPIO traits used by 1-Wire bus operations.
 
-const POWER_SETTLE_MS: u32 = 180; // Reader warm-up before first 1-Wire reset.
+pub const POWER_SETTLE_MS: u32 = 180; // Reader warm-up before first 1-Wire reset.
 const RETRY_GAP_MS: u32 = 15; // Delay between ROM read retries.
-const POWER_OFF_GUARD_MS: u32 = 3; // Guard time after power-down.
+pub const POWER_OFF_GUARD_MS: u32 = 3; // Guard time after power-down.
 const KEEP_POWER_ON_BETWEEN_SCANS: bool = false; // Power down after each command-triggered scan.
 
 pub fn delay_us(us: u32, cycles_per_us: u32) {
@@ -136,6 +136,25 @@ where
     let _ = pwr.set_high(); // Power reader ON.
     delay_ms_coop(POWER_SETTLE_MS, cycles_per_us, service); // Settle delay while still servicing communication.
 
+    let present = scan_reader_prewarmed(data, uid_out, cycles_per_us, service); // Read ROM with retries on already-warmed reader.
+
+    if !KEEP_POWER_ON_BETWEEN_SCANS {
+        let _ = pwr.set_low(); // Power reader OFF before switching to next channel.
+        delay_ms_coop(POWER_OFF_GUARD_MS, cycles_per_us, service); // Guard delay with cooperative servicing.
+    }
+
+    present // Report read result.
+}
+
+pub fn scan_reader_prewarmed<DATA>(
+    data: &mut DATA, // Per-reader 1-Wire data pin.
+    uid_out: &mut [u8; 8], // Output buffer for last valid ROM code.
+    cycles_per_us: u32, // Timing conversion factor from clocks.
+    service: &mut impl FnMut(), // Cooperative callback (e.g., service RS485).
+) -> bool
+where
+    DATA: OutputPin + InputPin,
+{
     let mut found = None; // Store a valid ROM if read succeeds.
     for _ in 0..3 { // Retry up to 3 times per scan to balance robustness and latency.
         if let Some(rom) = ibutton_read_rom(data, cycles_per_us) {
@@ -143,11 +162,6 @@ where
             break; // Stop retries after first success.
         }
         delay_ms_coop(RETRY_GAP_MS, cycles_per_us, service); // Retry gap with cooperative servicing.
-    }
-
-    if !KEEP_POWER_ON_BETWEEN_SCANS {
-        let _ = pwr.set_low(); // Power reader OFF before switching to next channel.
-        delay_ms_coop(POWER_OFF_GUARD_MS, cycles_per_us, service); // Guard delay with cooperative servicing.
     }
 
     if let Some(rom) = found {
